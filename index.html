@@ -41,11 +41,29 @@ main{max-width:1500px;margin:0 auto;padding:18px}.page{display:none}.page.active
 </style>
 </head>
 <body>
-<div id="app" class="app">
+<section id="auth" class="auth">
+  <div class="auth-card">
+    <div class="brand-mark">FC</div>
+    <h1>Fluxo de Caixa Gerencial</h1>
+    <p>Entre com o mesmo e-mail utilizado na compra pela Hotmart.</p>
+    <form id="loginForm">
+      <div class="field"><label>E-mail</label><input id="loginEmail" type="email" autocomplete="email" required placeholder="seu@email.com"></div>
+      <div class="field"><label>Senha</label><input id="loginPass" type="password" autocomplete="current-password" required placeholder="Sua senha"></div>
+      <div id="loginErr" class="err hidden"></div>
+      <div class="auth-actions">
+        <button class="btn btn-primary" type="submit">Entrar</button>
+        <button id="firstAccessBtn" class="btn btn-soft" type="button">Primeiro acesso — criar minha senha</button>
+        <button id="forgotBtn" class="btn-link" type="button">Esqueci minha senha</button>
+      </div>
+      <div class="auth-note">Seu acesso é validado pela assinatura do Fluxo de Caixa Gerencial.</div>
+    </form>
+  </div>
+</section>
+<div id="app" class="app hidden">
   <header class="topbar">
     <div class="top-inner">
       <div class="top-title"><div class="mini-logo">FC</div><div><h2>Fluxo de Caixa Gerencial</h2><small>GESTÃO QUE SERVE RESULTADOS</small></div></div>
-      
+      <div class="userbox"><span id="userEmail" class="user-email"></span><button id="logoutBtn" class="btn btn-soft" type="button">Sair</button></div>
     </div>
     <nav class="nav">
       <button class="active" data-page="entrada">1 · Lançamentos</button>
@@ -114,12 +132,17 @@ main{max-width:1500px;margin:0 auto;padding:18px}.page{display:none}.page.active
 
 <div id="editModal" class="modal hidden"><div class="modal-card"><h4>Editar lançamento</h4><p class="hint" id="editHint" style="margin:0 0 14px">Ajuste o valor e, quando a previsão se confirmar, altere a situação para Efetiva. A cor será atualizada automaticamente no fluxo.</p><div class="field"><label>Data</label><input id="editDate" type="date"></div><div class="field"><label>Categoria</label><input id="editCategory"></div><div class="field"><label>Valor</label><input id="editValue" type="number" min="0" step="0.01"></div><div class="field"><label>Situação</label><select id="editStatus"><option value="efetiva">Efetiva</option><option value="previsao">Previsão</option></select></div><div class="modal-actions"><button id="cancelEdit" class="btn btn-soft" type="button">Cancelar</button><button id="saveEdit" class="btn btn-primary" type="button">Salvar alteração</button></div></div></div>
 
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <script>
 (()=>{
 'use strict';
-const configured=false;
-const supa=null;
-let currentUser={email:'local'} , demoMode=true, entries=[], monthlyBalances={}, deferredPrompt=null, editingId=null;
+const CFG={
+  SUPABASE_URL:"https://ntxzfyqyuwbeammpakgx.supabase.co",
+  SUPABASE_PUBLISHABLE_KEY:"sb_publishable_T7UpzSoCL_3hdaqVkPOIOw__cBIBxZz",
+  PRODUCT_CODE:"fluxo_caixa"
+};
+const supa=window.supabase.createClient(CFG.SUPABASE_URL,CFG.SUPABASE_PUBLISHABLE_KEY);
+let currentUser=null, demoMode=false, entries=[], monthlyBalances={}, deferredPrompt=null, editingId=null;
 const $=id=>document.getElementById(id);
 const brl=v=>Number(v||0).toLocaleString('pt-BR',{style:'currency',currency:'BRL'});
 const isoToday=()=>{const d=new Date(); return new Date(d.getTime()-d.getTimezoneOffset()*60000).toISOString().slice(0,10)};
@@ -141,8 +164,43 @@ const expenseGroups=[
 ];
 let entryNature='receita', entryStatus='efetiva';
 
-function showApp(){ $('app').classList.remove('hidden'); initDates(); loadAll().then(()=>{renderFlow();renderChart();runSearch();}); }
-function showAuth(){ showApp(); }
+function showApp(){ $('auth').classList.add('hidden'); $('app').classList.remove('hidden'); $('userEmail').textContent=currentUser?.email||''; $('install').classList.remove('hidden'); initDates(); loadAll().then(()=>{renderFlow();renderChart();runSearch();}); }
+function showAuth(){ $('app').classList.add('hidden'); $('auth').classList.remove('hidden'); }
+async function validarAcesso(user){
+  if(!user?.email) return false;
+  const {data,error}=await supa.from('app_acessos').select('ativo,status').eq('email',user.email.toLowerCase()).eq('produto',CFG.PRODUCT_CODE).maybeSingle();
+  if(error){ console.error('Erro ao validar acesso:',error.message); return false; }
+  return data?.ativo===true;
+}
+async function entrarSeAutorizado(user){
+  currentUser=user;
+  const ok=await validarAcesso(user);
+  if(!ok){ await supa.auth.signOut(); currentUser=null; showAuth(); $('loginErr').textContent='Este e-mail não possui uma assinatura ativa para o Fluxo de Caixa Gerencial.'; $('loginErr').classList.remove('hidden'); return false; }
+  showApp(); return true;
+}
+$('loginForm').addEventListener('submit',async e=>{
+  e.preventDefault(); $('loginErr').classList.add('hidden');
+  const email=$('loginEmail').value.trim().toLowerCase(), password=$('loginPass').value;
+  const {data,error}=await supa.auth.signInWithPassword({email,password});
+  if(error){ $('loginErr').textContent='E-mail ou senha inválidos.'; $('loginErr').classList.remove('hidden'); return; }
+  await entrarSeAutorizado(data.user);
+});
+$('firstAccessBtn').addEventListener('click',async()=>{
+  $('loginErr').classList.add('hidden');
+  const email=$('loginEmail').value.trim().toLowerCase(), password=$('loginPass').value;
+  if(!email || !password || password.length<6){ $('loginErr').textContent='Digite o e-mail usado na compra e crie uma senha com pelo menos 6 caracteres.'; $('loginErr').classList.remove('hidden'); return; }
+  const {data,error}=await supa.auth.signUp({email,password});
+  if(error){ $('loginErr').textContent=error.message; $('loginErr').classList.remove('hidden'); return; }
+  if(data.session && data.user){ await entrarSeAutorizado(data.user); }
+  else { $('loginErr').textContent='Cadastro criado. Verifique seu e-mail para confirmar o acesso e depois entre com sua senha.'; $('loginErr').classList.remove('hidden'); }
+});
+$('forgotBtn').addEventListener('click',async()=>{
+  const email=$('loginEmail').value.trim().toLowerCase();
+  if(!email){ alert('Digite seu e-mail primeiro.'); return; }
+  const {error}=await supa.auth.resetPasswordForEmail(email,{redirectTo:location.origin+location.pathname});
+  alert(error?error.message:'Enviamos o link de recuperação para o seu e-mail.');
+});
+$('logoutBtn').addEventListener('click',async()=>{ await supa.auth.signOut(); currentUser=null; showAuth(); });
 function initDates(){ const today=isoToday(); $('entryDate').value=today; $('flowMonth').value=monthKey(today); const first=monthKey(today)+'-01'; const d=new Date(today+'T12:00:00'); const end=new Date(d.getFullYear(),d.getMonth()+1,0); $('filterStart').value=first; $('filterEnd').value=`${end.getFullYear()}-${String(end.getMonth()+1).padStart(2,'0')}-${String(end.getDate()).padStart(2,'0')}`; }
 
 async function loadAll(){ if(demoMode){entries=JSON.parse(localStorage.getItem('fc_entries')||'[]'); monthlyBalances=JSON.parse(localStorage.getItem('fc_balances')||'{}'); return;} if(!supa||!currentUser)return; const [{data:e,error:ee},{data:b,error:be}]=await Promise.all([supa.from('fluxo_lancamentos').select('*').order('data'),supa.from('fluxo_saldos_mensais').select('*')]); if(ee)alert('Erro ao carregar lançamentos: '+ee.message); else entries=(e||[]); if(be)alert('Erro ao carregar saldos: '+be.message); else {monthlyBalances={};(b||[]).forEach(x=>monthlyBalances[x.mes]=Number(x.saldo_inicial||0));} }
@@ -184,7 +242,7 @@ function refreshAll(){renderFlow();renderChart();runSearch();}
 
 document.querySelectorAll('.nav button').forEach(b=>b.addEventListener('click',()=>{document.querySelectorAll('.nav button').forEach(x=>x.classList.remove('active'));b.classList.add('active');document.querySelectorAll('.page').forEach(p=>p.classList.remove('active'));$('page-'+b.dataset.page).classList.add('active');if(b.dataset.page==='fluxo')renderFlow();if(b.dataset.page==='grafico')renderChart();if(b.dataset.page==='pesquisa')runSearch();}));
 
-showApp();
+supa.auth.getSession().then(async ({data})=>{ if(data.session?.user){ await entrarSeAutorizado(data.session.user); } else { showAuth(); } });
 window.addEventListener('beforeinstallprompt',e=>{e.preventDefault();deferredPrompt=e;$('install').classList.remove('hidden');});$('installBtn').addEventListener('click',async()=>{if(deferredPrompt){deferredPrompt.prompt();await deferredPrompt.userChoice;deferredPrompt=null;$('install').classList.add('hidden');return;}const isIOS=/iphone|ipad|ipod/i.test(navigator.userAgent);alert(isIOS?'No Safari, toque em Compartilhar e depois em “Adicionar à Tela de Início”.':'Use o menu do navegador e escolha “Instalar aplicativo” ou “Adicionar à tela inicial”.');});
 if('serviceWorker'in navigator)window.addEventListener('load',()=>navigator.serviceWorker.register('./service-worker.js').catch(()=>{}));
 })();
